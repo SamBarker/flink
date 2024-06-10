@@ -30,6 +30,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.testcontainers.shaded.org.awaitility.Awaitility;
 
 import java.io.File;
 import java.io.IOException;
@@ -48,6 +51,7 @@ public class ProfilingServiceTest extends TestLogger {
     private static final String RESOURCE_ID = "TestJobManager";
     private static final long DEFAULT_PROFILING_DURATION = 3L;
     private static final int HISTORY_SIZE_LIMIT = 2;
+    private int actualHistorySizeLimit = HISTORY_SIZE_LIMIT;
 
     private ProfilingService profilingService;
     private final Configuration configs = new Configuration();
@@ -57,6 +61,8 @@ public class ProfilingServiceTest extends TestLogger {
         configs.set(RestOptions.MAX_PROFILING_HISTORY_SIZE, HISTORY_SIZE_LIMIT);
         configs.set(RestOptions.PROFILING_RESULT_DIR, tempDir.toString());
         profilingService = ProfilingService.getInstance(configs);
+        Assertions.assertEquals(tempDir.toString(), profilingService.getProfilingResultDir());
+        actualHistorySizeLimit = profilingService.getHistorySizeLimit();
     }
 
     @AfterEach
@@ -67,7 +73,15 @@ public class ProfilingServiceTest extends TestLogger {
     @Test
     public void testSingleton() throws IOException {
         try (ProfilingService testService = ProfilingService.getInstance(configs)) {
-            Assertions.assertEquals(profilingService, testService);
+            Assertions.assertSame(profilingService, testService);
+        }
+    }
+
+    @Test
+    public void testClose() throws IOException {
+        profilingService.close();
+        try (ProfilingService testService = ProfilingService.getInstance(configs)) {
+            Assertions.assertNotSame(profilingService, testService);
         }
     }
 
@@ -79,6 +93,29 @@ public class ProfilingServiceTest extends TestLogger {
                     testService.getProfilingResultDir());
             Assertions.assertEquals(
                     configs.get(RestOptions.MAX_PROFILING_HISTORY_SIZE),
+                    testService.getHistorySizeLimit());
+        }
+    }
+
+    @Test
+    void testProfilingConfigurationIgnoredForRepeatedCalls() throws IOException {
+        final Configuration ignoredConfigs = new Configuration();
+        ignoredConfigs.set(RestOptions.MAX_PROFILING_HISTORY_SIZE, 1000);
+        try (ProfilingService testService = ProfilingService.getInstance(ignoredConfigs)) {
+            Assertions.assertEquals(
+                    configs.get(RestOptions.MAX_PROFILING_HISTORY_SIZE),
+                    testService.getHistorySizeLimit());
+        }
+    }
+
+    @Test
+    void testProfilingConfigurationIsUsedForNewInstance() throws IOException {
+        profilingService.close();
+        final Configuration localConfigs = new Configuration();
+        localConfigs.set(RestOptions.MAX_PROFILING_HISTORY_SIZE, 1000);
+        try (ProfilingService testService = ProfilingService.getInstance(localConfigs)) {
+            Assertions.assertEquals(
+                    1000,
                     testService.getHistorySizeLimit());
         }
     }
@@ -107,8 +144,8 @@ public class ProfilingServiceTest extends TestLogger {
     @Test
     @Timeout(value = 1, unit = TimeUnit.MINUTES)
     public void testRollingDeletion() throws ExecutionException, InterruptedException {
-        // trigger 3 times ITIMER mode profiling
-        for (int i = 0; i < 3; i++) {
+        //The profiling service is configured with a limit of X this submits X+1 requests
+        for (int i = 0; i < actualHistorySizeLimit; i++) {
             requestSingleProfiling(
                     ProfilingInfo.ProfilingMode.ITIMER, DEFAULT_PROFILING_DURATION, true);
         }
